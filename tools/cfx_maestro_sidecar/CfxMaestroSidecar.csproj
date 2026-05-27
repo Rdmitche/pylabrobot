@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    CFX Maestro sidecar bridge.
+
+    MUST target .NET Framework (net48). .NET Core / .NET 5+ do NOT support
+    WSDualHttpBinding or WS-SecureConversation message security, which the CFX
+    Maestro WCF service requires. Build on the Windows host that runs CFX Maestro:
+
+        dotnet build -c Release
+      (or open in Visual Studio 2019+ with the .NET desktop workload)
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <AssemblyName>CfxMaestroSidecar</AssemblyName>
+    <RootNamespace>CfxMaestroSidecar</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- WCF client stack (System.ServiceModel) + HttpListener (System.Net). -->
+    <Reference Include="System.ServiceModel" />
+    <Reference Include="System.Net" />
+    <Reference Include="System.Configuration" />
+  </ItemGroup>
+
+</Project>

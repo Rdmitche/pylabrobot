@@ -1,0 +1,14 @@
+# .NET build output
+bin/
+obj/
+
+# svcutil-generated proxy/config (regenerate with generate-proxy.cmd)
+SOCFXCommandService.cs
+App.generated.config
+
+# WCF trace logs
+*.svclog
+
+# macOS transfer cruft
+._*
+.DS_Store
