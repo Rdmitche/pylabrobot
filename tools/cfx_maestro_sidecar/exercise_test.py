@@ -161,7 +161,8 @@ if __name__ == "__main__":
   p.add_argument("--protocol-file", default=_DEFAULT_PROTOCOL, help="host path to .csv/.pcrd/.plrn")
   p.add_argument("--plate-file", default="", help="host path to .pltd (empty for PrimePCR csv)")
   p.add_argument("--data-file", default="", help="host output .pcrd path (empty = Maestro default)")
-  p.add_argument("--lid-wait", type=float, default=12.0, help="seconds to poll after each lid op")
+  p.add_argument("--lid-wait", type=float, default=20.0,
+                 help="seconds to poll after each lid op (real CFX384 lids take 8-10s; 12s was edge-of-window)")
   p.add_argument("--run-wait", type=float, default=60.0, help="seconds to poll after starting run")
   p.add_argument("--poll-interval", type=float, default=3.0)
   p.add_argument("--skip-lid", action="store_true")
