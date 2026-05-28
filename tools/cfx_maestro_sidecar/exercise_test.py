@@ -60,6 +60,18 @@ async def _poll(backend: CFXMaestroBackend, label: str, seconds: float, interval
 async def main(args) -> int:
   backend = CFXMaestroBackend(sidecar_url=args.sidecar_url, request_timeout=args.timeout)
 
+  if args.dump_xml:
+    # Wrap the transport to log every Message/Blocks pair to stdout.
+    inner = backend._xml_command  # type: ignore[attr-defined]
+
+    async def _logging_xml_command(msg: str) -> str:
+      print("\n--- REQUEST XML ---\n" + msg)
+      resp = await inner(msg)
+      print("\n--- RESPONSE XML ---\n" + resp + "\n--- end ---\n")
+      return resp
+
+    backend._xml_command = _logging_xml_command  # type: ignore[assignment]
+
   print(f"[exercise] sidecar = {args.sidecar_url}")
   await backend.setup()
   print(f"[exercise] registered; serial = {backend.serial_number!r}")
@@ -134,5 +146,6 @@ if __name__ == "__main__":
   p.add_argument("--skip-lid", action="store_true")
   p.add_argument("--skip-run", action="store_true")
   p.add_argument("--stop-after", action="store_true", help="StopRun after polling the run")
+  p.add_argument("--dump-xml", action="store_true", help="Log every Message/Blocks XML pair")
   args = p.parse_args()
   sys.exit(asyncio.run(main(args)))

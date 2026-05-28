@@ -261,6 +261,22 @@ class CFXMaestroBackend(ThermocyclerBackend):
       raise RuntimeError(f"CFX Maestro error on {operation}: {'; '.join(resp.errors)}")
     return resp
 
+  async def _control_command(self, operation: str, params: dict) -> CFXBlocksResponse:
+    """Like ``_command`` but also raises on per-instrument errors.
+
+    Use for state-changing operations (Open/CloseLid, RunProtocol, Stop/Pause/
+    ResumeRun). CFX Maestro reports operation-specific failures (e.g. "couldn't
+    start the run because the data file path is invalid") in the target block's
+    InstrumentBlockType.ErrorArray, not the top-level server ErrorArray.
+    """
+    resp = await self._command(operation, params)
+    block = self._block(resp)
+    if block.errors:
+      raise RuntimeError(
+        f"CFX Maestro instrument error on {operation}: {'; '.join(block.errors)}"
+      )
+    return resp
+
   def _block(self, resp: CFXBlocksResponse) -> CFXInstrumentBlock:
     """Return the targeted block's status from a response."""
     if not resp.blocks:
@@ -297,10 +313,10 @@ class CFXMaestroBackend(ThermocyclerBackend):
   # ----- lid ---------------------------------------------------------------
 
   async def open_lid(self):
-    await self._command("OpenLid", {"SerialNumber": self.serial_number})
+    await self._control_command("OpenLid", {"SerialNumber": self.serial_number})
 
   async def close_lid(self):
-    await self._command("CloseLid", {"SerialNumber": self.serial_number})
+    await self._control_command("CloseLid", {"SerialNumber": self.serial_number})
 
   async def get_lid_open(self) -> bool:
     return (await self._status()).status in _LID_OPEN_STATES
@@ -390,7 +406,7 @@ class CFXMaestroBackend(ThermocyclerBackend):
       raise ValueError("CFX Maestro run_protocol requires a host-side protocol_file path")
     # NOTE: RunProtocolType is an ordered xs:sequence of required (minOccurs=1)
     # elements; the dict order below must match the schema exactly.
-    await self._command(
+    await self._control_command(
       "RunProtocol",
       {
         "SerialNumber": self.serial_number,
@@ -409,13 +425,13 @@ class CFXMaestroBackend(ThermocyclerBackend):
     )
 
   async def stop_run(self):
-    await self._command("StopRun", {"SerialNumber": self.serial_number})
+    await self._control_command("StopRun", {"SerialNumber": self.serial_number})
 
   async def pause_run(self):
-    await self._command("PauseRun", {"SerialNumber": self.serial_number})
+    await self._control_command("PauseRun", {"SerialNumber": self.serial_number})
 
   async def resume_run(self):
-    await self._command("ResumeRun", {"SerialNumber": self.serial_number})
+    await self._control_command("ResumeRun", {"SerialNumber": self.serial_number})
 
   async def get_estimated_remaining_run_time(self) -> float:
     return (await self._status()).estimated_remaining_run_time_s
