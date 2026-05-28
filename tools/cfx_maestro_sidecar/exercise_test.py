@@ -41,6 +41,10 @@ async def _print_status(backend: CFXMaestroBackend, label: str) -> str:
     f"block={b.block_temperature}C lid={b.lid_temperature}C  "
     f"eta={b.estimated_remaining_run_time_s}s"
   )
+  # CFX Maestro reports operation errors asynchronously on later polls (not on
+  # the immediate response), so surface them here.
+  for err in b.errors:
+    print(f"    !! instrument error: {err}")
   return b.status
 
 
@@ -113,6 +117,17 @@ async def main(args) -> int:
         print("[exercise] RunProtocol accepted; polling status transitions...")
         await _poll(backend, "run", seconds=args.run_wait, interval=args.poll_interval)
 
+        if args.pause_resume:
+          print("\n=== PauseRun ===")
+          try:
+            await backend.pause_run()
+            await _poll(backend, "pause", seconds=args.pause_wait, interval=args.poll_interval)
+            print("\n=== ResumeRun ===")
+            await backend.resume_run()
+            await _poll(backend, "resume", seconds=args.pause_wait, interval=args.poll_interval)
+          except Exception as e:  # noqa: BLE001
+            print(f"[exercise] Pause/Resume failed: {e}", file=sys.stderr)
+
         if args.stop_after:
           print("\n=== StopRun ===")
           await backend.stop_run()
@@ -146,6 +161,10 @@ if __name__ == "__main__":
   p.add_argument("--skip-lid", action="store_true")
   p.add_argument("--skip-run", action="store_true")
   p.add_argument("--stop-after", action="store_true", help="StopRun after polling the run")
+  p.add_argument("--pause-resume", action="store_true",
+                 help="Exercise PauseRun + ResumeRun mid-run (after --run-wait elapses)")
+  p.add_argument("--pause-wait", type=float, default=15.0,
+                 help="seconds to poll after each of PauseRun and ResumeRun")
   p.add_argument("--dump-xml", action="store_true", help="Log every Message/Blocks XML pair")
   args = p.parse_args()
   sys.exit(asyncio.run(main(args)))
