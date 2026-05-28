@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 import unittest.mock
 import xml.etree.ElementTree as ET
@@ -7,6 +8,7 @@ from pylabrobot.thermocycling.biorad.cfx_maestro import (
   CFX_NS,
   CFX384Backend,
   CFXMaestroBackend,
+  CFXMaestroSession,
   build_message,
   cfx384,
   parse_blocks,
@@ -116,7 +118,7 @@ class TestCFXMaestroBackend(unittest.IsolatedAsyncioTestCase):
         return _blocks_xml(status="Idle", reg_id="REG-NEW")
       return _blocks_xml()
 
-    self.backend._xml_command = fake_xml_command  # type: ignore[assignment]
+    self.backend._session._xml_command = fake_xml_command  # type: ignore[assignment]
 
   def _last_op(self) -> str:
     root = ET.fromstring(self.sent[-1])
@@ -130,7 +132,7 @@ class TestCFXMaestroBackend(unittest.IsolatedAsyncioTestCase):
 
   async def test_setup_registers_and_adopts_serial(self):
     b = CFXMaestroBackend(sidecar_url="http://localhost:9/x")
-    b._xml_command = self.backend._xml_command  # type: ignore[assignment]
+    b._session._xml_command = self.backend._session._xml_command  # type: ignore[assignment]
     await b.setup()
     self.assertEqual(b._registration_id, "REG-NEW")
     self.assertEqual(b.serial_number, "SN12345")
@@ -197,7 +199,7 @@ class TestCFXMaestroBackend(unittest.IsolatedAsyncioTestCase):
         "<ErrorDescriptionInvariantCulture>bad</ErrorDescriptionInvariantCulture></ErrorArray>"
       )
 
-    self.backend._xml_command = erroring  # type: ignore[assignment]
+    self.backend._session._xml_command = erroring  # type: ignore[assignment]
     with self.assertRaisesRegex(RuntimeError, "bad"):
       await self.backend.stop_run()
 
@@ -233,7 +235,7 @@ class TestCFXMaestroBackend(unittest.IsolatedAsyncioTestCase):
       return _two_blocks(msg)
 
     b = CFXMaestroBackend(sidecar_url="http://localhost:9/x")
-    b._xml_command = fake  # type: ignore[assignment]
+    b._session._xml_command = fake  # type: ignore[assignment]
 
     with _w.catch_warnings(record=True) as caught:
       _w.simplefilter("always")
@@ -273,6 +275,125 @@ class TestResource(unittest.TestCase):
   def test_resource(self):
     tc = cfx384(name="cfx", backend=CFX384ChatterboxBackend())
     self.assertEqual(tc.model, "BioRad_CFX384")
+
+
+def _two_block_response(reg_id="REG-1") -> str:
+  """Two-instrument QueryBlocks/RegisterService response for shared-session tests."""
+  return f"""<?xml version="1.0"?>
+<Blocks xmlns="{CFX_NS}">
+  <CFXManagerVersion>3.1</CFXManagerVersion><User>t</User>
+  <RegistrationID>{reg_id}</RegistrationID>
+  <BlockArray><SerialNumber>SN-A</SerialNumber><Status>Idle</Status>
+    <Step>0</Step><Steps>0</Steps><Cycle>0</Cycle><Cycles>0</Cycles>
+    <SampleVolume><Volume>0</Volume><Units>u</Units></SampleVolume>
+    <LidTemperature><Temperature>25</Temperature><Units>C</Units></LidTemperature>
+    <BlockTemperature><Temperature>30</Temperature><Units>C</Units></BlockTemperature>
+    <EstimatedRemainingRunTime>0</EstimatedRemainingRunTime><NickName>A</NickName>
+  </BlockArray>
+  <BlockArray><SerialNumber>SN-B</SerialNumber><Status>Idle</Status>
+    <Step>0</Step><Steps>0</Steps><Cycle>0</Cycle><Cycles>0</Cycles>
+    <SampleVolume><Volume>0</Volume><Units>u</Units></SampleVolume>
+    <LidTemperature><Temperature>25</Temperature><Units>C</Units></LidTemperature>
+    <BlockTemperature><Temperature>40</Temperature><Units>C</Units></BlockTemperature>
+    <EstimatedRemainingRunTime>0</EstimatedRemainingRunTime><NickName>B</NickName>
+  </BlockArray>
+</Blocks>"""
+
+
+class TestCFXMaestroSession(unittest.IsolatedAsyncioTestCase):
+  def setUp(self):
+    self.session = CFXMaestroSession(sidecar_url="http://localhost:9/x")
+    self.sent = []
+
+    async def fake(msg: str) -> str:
+      self.sent.append(msg)
+      return _two_block_response("REG-S")
+
+    self.session._xml_command = fake  # type: ignore[assignment]
+
+  async def test_connect_sets_registration_id_and_returns_blocks(self):
+    resp = await self.session.connect()
+    self.assertEqual(self.session.registration_id, "REG-S")
+    self.assertEqual([b.serial_number for b in resp.blocks], ["SN-A", "SN-B"])
+
+  async def test_double_connect_raises(self):
+    await self.session.connect()
+    with self.assertRaisesRegex(RuntimeError, "already connected"):
+      await self.session.connect()
+
+  async def test_disconnect_clears_registration_and_is_idempotent(self):
+    await self.session.connect()
+    await self.session.disconnect()
+    self.assertEqual(self.session.registration_id, "")
+    # second call is a no-op
+    await self.session.disconnect()
+
+  async def test_list_instruments_requires_connect(self):
+    with self.assertRaisesRegex(RuntimeError, "not connected"):
+      await self.session.list_instruments()
+
+  async def test_async_context_manager(self):
+    async with self.session as s:
+      self.assertEqual(s.registration_id, "REG-S")
+    self.assertEqual(self.session.registration_id, "")
+
+
+class TestCFXMaestroBackendWithSession(unittest.IsolatedAsyncioTestCase):
+  def setUp(self):
+    self.session = CFXMaestroSession(sidecar_url="http://localhost:9/x")
+
+    self.transport_calls = []
+
+    async def fake(msg: str) -> str:
+      self.transport_calls.append(msg)
+      return _two_block_response("REG-S")
+
+    self.session._xml_command = fake  # type: ignore[assignment]
+
+  async def test_constructor_requires_url_xor_session(self):
+    with self.assertRaisesRegex(ValueError, "exactly one"):
+      CFXMaestroBackend()  # neither
+    with self.assertRaisesRegex(ValueError, "exactly one"):
+      CFXMaestroBackend(sidecar_url="http://x", session=self.session)  # both
+
+  async def test_shared_backend_requires_explicit_serial(self):
+    await self.session.connect()
+    b = CFXMaestroBackend(session=self.session)  # no serial_number
+    with self.assertRaisesRegex(ValueError, "must specify serial_number"):
+      await b.setup()
+
+  async def test_shared_backend_setup_validates_session_connected(self):
+    b = CFXMaestroBackend(session=self.session, serial_number="SN-A")
+    with self.assertRaisesRegex(RuntimeError, "not connected"):
+      await b.setup()
+
+  async def test_shared_backends_target_different_units(self):
+    await self.session.connect()
+    a = CFXMaestroBackend(session=self.session, serial_number="SN-A")
+    b = CFXMaestroBackend(session=self.session, serial_number="SN-B")
+    await a.setup()
+    await b.setup()
+    self.assertEqual(await a.get_block_current_temperature(), [30.0])
+    self.assertEqual(await b.get_block_current_temperature(), [40.0])
+
+  async def test_shared_backend_stop_does_not_disconnect_session(self):
+    await self.session.connect()
+    a = CFXMaestroBackend(session=self.session, serial_number="SN-A")
+    await a.setup()
+    await a.stop()
+    self.assertEqual(self.session.registration_id, "REG-S")  # still connected
+
+  async def test_concurrent_status_polls(self):
+    """Two backends polling concurrently both succeed and target the right unit."""
+    await self.session.connect()
+    a = CFXMaestroBackend(session=self.session, serial_number="SN-A")
+    b = CFXMaestroBackend(session=self.session, serial_number="SN-B")
+    await asyncio.gather(a.setup(), b.setup())
+    temps = await asyncio.gather(
+      a.get_block_current_temperature(),
+      b.get_block_current_temperature(),
+    )
+    self.assertEqual(temps, [[30.0], [40.0]])
 
 
 if __name__ == "__main__":

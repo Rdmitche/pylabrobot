@@ -206,41 +206,41 @@ def parse_blocks(xml: str) -> CFXBlocksResponse:
 
 
 # ---------------------------------------------------------------------------
-# Backend
+# Session: shared CFX Maestro registration + transport
 # ---------------------------------------------------------------------------
 
 
-class CFXMaestroBackend(ThermocyclerBackend):
-  """Backend for any CFX real-time PCR system via the CFX Maestro API sidecar.
+class CFXMaestroSession:
+  """A single CFX Maestro registration shared by one or more backends.
 
-  Args:
-    sidecar_url: Base URL of the .NET sidecar's ``XmlCommand`` endpoint, e.g.
-      ``http://192.168.1.50:8080/xmlcommand``.
-    serial_number: Base serial number of the target CFX block. If ``None``,
-      :meth:`setup` adopts the first block reported by the status poll.
-    request_timeout: HTTP timeout (s) for sidecar calls.
+  CFX Maestro only allows **one registered API client at a time**. To control
+  multiple instruments concurrently (e.g. start runs on two CFX384s in
+  parallel), all controllers must speak through the same registration. A
+  :class:`CFXMaestroSession` owns that registration and the HTTP transport to
+  the sidecar; multiple :class:`CFXMaestroBackend` instances can attach to it
+  by passing ``session=...``, each targeting a different ``serial_number``.
+
+  Use as an async context manager, or call :meth:`connect`/:meth:`disconnect`
+  explicitly::
+
+      async with CFXMaestroSession("http://host:8080/xmlcommand") as session:
+          blocks = await session.list_instruments()
+          backends = [
+              CFXMaestroBackend(session=session, serial_number=b.serial_number)
+              for b in blocks
+          ]
+          for b in backends:
+              await b.setup()
+          await asyncio.gather(*(b.open_lid() for b in backends))
   """
 
-  def __init__(
-    self,
-    sidecar_url: str,
-    serial_number: Optional[str] = None,
-    request_timeout: float = 30.0,
-  ):
-    super().__init__()
+  def __init__(self, sidecar_url: str, request_timeout: float = 30.0):
     self.sidecar_url = sidecar_url
-    self.serial_number = serial_number
     self.request_timeout = request_timeout
-    self._registration_id: str = ""
-
-  # ----- transport (the only network-touching method) ---------------------
+    self.registration_id: str = ""
 
   async def _xml_command(self, message_xml: str) -> str:
-    """POST a ``Message`` XML doc to the sidecar; return the ``Blocks`` XML.
-
-    Isolated so tests can mock it and so an alternative transport (direct SOAP,
-    a different bridge) can be swapped in without touching command logic.
-    """
+    """POST a ``Message`` XML doc to the sidecar; return the ``Blocks`` XML."""
 
     def _post() -> str:
       req = urllib.request.Request(
@@ -253,6 +253,120 @@ class CFXMaestroBackend(ThermocyclerBackend):
         return resp.read().decode("utf-8")
 
     return await asyncio.get_running_loop().run_in_executor(None, _post)
+
+  async def connect(self) -> CFXBlocksResponse:
+    """Register with CFX Maestro. Returns the initial status snapshot."""
+    if self.registration_id:
+      raise RuntimeError("CFXMaestroSession is already connected")
+    resp = parse_blocks(await self._xml_command(build_message("", "RegisterService")))
+    if resp.errors:
+      raise RuntimeError(f"CFX Maestro registration failed: {'; '.join(resp.errors)}")
+    self.registration_id = resp.registration_id
+    return resp
+
+  async def disconnect(self) -> None:
+    """Unregister with CFX Maestro. Idempotent."""
+    if not self.registration_id:
+      return
+    try:
+      await self._xml_command(build_message(self.registration_id, "UnRegisterService"))
+    finally:
+      self.registration_id = ""
+
+  async def list_instruments(self) -> List[CFXInstrumentBlock]:
+    """Return the current ``BlockArray`` from a ``QueryBlocks`` poll."""
+    if not self.registration_id:
+      raise RuntimeError("CFXMaestroSession not connected; call connect() first")
+    resp = parse_blocks(
+      await self._xml_command(build_message(self.registration_id, "QueryBlocks"))
+    )
+    if resp.errors:
+      raise RuntimeError(f"CFX Maestro QueryBlocks error: {'; '.join(resp.errors)}")
+    return resp.blocks
+
+  async def __aenter__(self) -> "CFXMaestroSession":
+    await self.connect()
+    return self
+
+  async def __aexit__(self, *_exc) -> None:
+    await self.disconnect()
+
+
+# ---------------------------------------------------------------------------
+# Backend
+# ---------------------------------------------------------------------------
+
+
+class CFXMaestroBackend(ThermocyclerBackend):
+  """Backend for any CFX real-time PCR system via the CFX Maestro API sidecar.
+
+  Pass **either** a ``sidecar_url`` (the backend owns a private session and
+  registers on ``setup``), **or** a shared ``session`` to enable concurrent
+  control of multiple instruments behind one registration::
+
+      # single-instrument, self-owned session
+      backend = CFXMaestroBackend(sidecar_url="http://host:8080/xmlcommand")
+      await backend.setup()
+
+      # multi-instrument, shared session
+      session = CFXMaestroSession("http://host:8080/xmlcommand")
+      await session.connect()
+      bench_a = CFXMaestroBackend(session=session, serial_number="CT059744")
+      bench_b = CFXMaestroBackend(session=session, serial_number="CT045747")
+      await asyncio.gather(bench_a.setup(), bench_b.setup())
+
+  Args:
+    sidecar_url: Sidecar ``XmlCommand`` endpoint. Mutually exclusive with
+      ``session``.
+    session: A pre-constructed :class:`CFXMaestroSession`. Mutually exclusive
+      with ``sidecar_url``. When sharing a session, ``serial_number`` is
+      required (auto-adoption is disabled to avoid silently targeting the
+      wrong unit).
+    serial_number: Base serial number of the target CFX block.
+    request_timeout: HTTP timeout (s) for sidecar calls (ignored when
+      ``session`` is provided — the session's timeout is used).
+  """
+
+  def __init__(
+    self,
+    sidecar_url: Optional[str] = None,
+    serial_number: Optional[str] = None,
+    request_timeout: float = 30.0,
+    *,
+    session: Optional[CFXMaestroSession] = None,
+  ):
+    super().__init__()
+    if (sidecar_url is None) == (session is None):
+      raise ValueError("Pass exactly one of sidecar_url or session")
+    if session is not None:
+      self._session = session
+      self._owns_session = False
+    else:
+      self._session = CFXMaestroSession(sidecar_url, request_timeout=request_timeout)
+      self._owns_session = True
+    self.serial_number = serial_number
+
+  # ----- transport (delegates to session) ---------------------------------
+
+  @property
+  def sidecar_url(self) -> str:
+    return self._session.sidecar_url
+
+  @property
+  def request_timeout(self) -> float:
+    return self._session.request_timeout
+
+  @property
+  def _registration_id(self) -> str:
+    return self._session.registration_id
+
+  @_registration_id.setter
+  def _registration_id(self, value: str) -> None:
+    # Kept for test compatibility; in normal use the session owns this.
+    self._session.registration_id = value
+
+  async def _xml_command(self, message_xml: str) -> str:
+    return await self._session._xml_command(message_xml)
 
   async def _command(self, operation: str, params: Optional[dict] = None) -> CFXBlocksResponse:
     """Build a Message, send it, parse the Blocks response, raise on error."""
@@ -295,30 +409,39 @@ class CFXMaestroBackend(ThermocyclerBackend):
   # ----- lifecycle ---------------------------------------------------------
 
   async def setup(self):
-    resp = parse_blocks(
-      await self._xml_command(build_message("", "RegisterService"))
-    )
-    if resp.errors:
-      raise RuntimeError(f"CFX Maestro registration failed: {'; '.join(resp.errors)}")
-    self._registration_id = resp.registration_id
-    if self.serial_number is None and resp.blocks:
-      self.serial_number = resp.blocks[0].serial_number
-      if len(resp.blocks) > 1:
-        # Multi-instrument footgun: don't silently pick one for the user.
-        all_serials = ", ".join(b.serial_number for b in resp.blocks)
-        warnings.warn(
-          f"CFX Maestro reports {len(resp.blocks)} connected instruments "
-          f"({all_serials}); auto-adopted {self.serial_number!r}. Pass "
-          f"serial_number=... explicitly to target a specific block.",
-          stacklevel=2,
+    if self._owns_session:
+      resp = await self._session.connect()
+      if self.serial_number is None and resp.blocks:
+        self.serial_number = resp.blocks[0].serial_number
+        if len(resp.blocks) > 1:
+          # Multi-instrument footgun: don't silently pick one for the user.
+          all_serials = ", ".join(b.serial_number for b in resp.blocks)
+          warnings.warn(
+            f"CFX Maestro reports {len(resp.blocks)} connected instruments "
+            f"({all_serials}); auto-adopted {self.serial_number!r}. Pass "
+            f"serial_number=... explicitly to target a specific block.",
+            stacklevel=2,
+          )
+    else:
+      # Shared session. Don't auto-adopt — when multiple backends share a
+      # session, "first block" doesn't disambiguate who gets which.
+      if not self._session.registration_id:
+        raise RuntimeError(
+          "Shared CFXMaestroSession is not connected; "
+          "call await session.connect() before backend.setup()"
+        )
+      if self.serial_number is None:
+        blocks = await self._session.list_instruments()
+        available = ", ".join(b.serial_number for b in blocks) or "(none)"
+        raise ValueError(
+          "When attaching to a shared CFXMaestroSession you must specify "
+          f"serial_number explicitly. Connected instruments: {available}"
         )
 
   async def stop(self):
-    if self._registration_id:
-      try:
-        await self._command("UnRegisterService")
-      finally:
-        self._registration_id = ""
+    if self._owns_session:
+      await self._session.disconnect()
+    # If sharing a session, the session owner is responsible for disconnect().
 
   # ----- lid ---------------------------------------------------------------
 
