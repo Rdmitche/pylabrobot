@@ -62,7 +62,11 @@ async def _poll(backend: CFXMaestroBackend, label: str, seconds: float, interval
 
 
 async def main(args) -> int:
-  backend = CFXMaestroBackend(sidecar_url=args.sidecar_url, request_timeout=args.timeout)
+  backend = CFXMaestroBackend(
+    sidecar_url=args.sidecar_url,
+    serial_number=args.serial_number,
+    request_timeout=args.timeout,
+  )
 
   if args.dump_xml:
     # Wrap the transport to log every Message/Blocks pair to stdout.
@@ -152,6 +156,8 @@ if __name__ == "__main__":
   p = argparse.ArgumentParser(description="CFX Maestro lid + run_protocol exercise")
   p.add_argument("--sidecar-url", default="http://localhost:8080/xmlcommand")
   p.add_argument("--timeout", type=float, default=30.0)
+  p.add_argument("--serial-number", default=None,
+                 help="Target a specific CFX serial. Default: adopt the first connected block.")
   p.add_argument("--protocol-file", default=_DEFAULT_PROTOCOL, help="host path to .csv/.pcrd/.plrn")
   p.add_argument("--plate-file", default="", help="host path to .pltd (empty for PrimePCR csv)")
   p.add_argument("--data-file", default="", help="host output .pcrd path (empty = Maestro default)")

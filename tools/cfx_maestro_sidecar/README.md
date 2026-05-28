@@ -91,6 +91,73 @@ await tc.backend.run_protocol(
 )
 ```
 
+## Real hardware: multiple CFX384 units
+
+CFX Maestro can host many instruments behind one sidecar; you target each one
+by **base serial number**. The driver itself works unchanged on real hardware
+(the Simulation milestone validated every state-changing operation against the
+live API).
+
+### Step 1 — bring CFX Maestro up with all instruments connected
+
+- Power on every CFX384 and plug it into the host's USB.
+- Launch CFX Maestro (User mode). Wait until every instrument appears in its
+  detected-instruments list and reports an Idle status (real units go through
+  `Synchronizing → Idle` after CFX Maestro starts).
+- Start `CfxMaestroSidecar.exe` exactly as for the Simulation tests.
+
+### Step 2 — discover what's connected
+
+```powershell
+py tools\cfx_maestro_sidecar\list_instruments.py --sidecar-url http://localhost:8080/xmlcommand
+```
+
+Sample output:
+```
+[list] 2 instrument(s) connected:
+  [0] serial=12345  model=CFX384  wells=384 (16x24)  simulated=false  status='Idle'  lid=CLOSED  nickname=BenchA
+  [1] serial=67890  model=CFX384  wells=384 (16x24)  simulated=false  status='Idle'  lid=CLOSED  nickname=BenchB
+```
+
+Use the **`serial`** values for every subsequent command. Confirm
+`model=CFX384` and `wells=384`; the driver doesn't care about chassis but your
+**plate (`.pltd`) files must match** the instrument's well count, or CFX Maestro
+will reject `RunProtocol` with *"plate file with N wells cannot be run on an
+M-well instrument"*.
+
+### Step 3 — exercise each unit one at a time
+
+```powershell
+# read-only smoke test against unit A
+py tools\cfx_maestro_sidecar\smoke_test.py --sidecar-url http://localhost:8080/xmlcommand --serial-number 12345
+
+# full lid + run + pause/resume/stop exercise against unit A
+py tools\cfx_maestro_sidecar\exercise_test.py --sidecar-url http://localhost:8080/xmlcommand --serial-number 12345 `
+   --protocol-file "C:\path\to\your_384.pcrd" --plate-file "C:\path\to\your_384.pltd" `
+   --data-file C:\Temp\runA.pcrd --run-wait 60 --pause-resume --stop-after
+
+# repeat against unit B
+py tools\cfx_maestro_sidecar\exercise_test.py --sidecar-url http://localhost:8080/xmlcommand --serial-number 67890 ...
+```
+
+A run on real hardware takes the protocol's full duration (typically 30–120
+minutes), not seconds. Either let `exercise_test.py --run-wait` run that long,
+or attach to status polling from your own code via `await tc.get_block_status()`
+and `await tc.is_profile_running()`.
+
+### Notes on the single-client rule
+
+CFX Maestro only allows **one registered API client at a time**. Each
+`CFXMaestroBackend.setup()` registers, and `stop()` unregisters. To control
+multiple instruments **concurrently** (e.g. start a run on A and B in
+parallel), you'd want a shared session — open an issue / ping me and we'll
+add a `CFXMaestroSession` that holds one registration and serves multiple
+backends. For **sequential** real-hardware testing (one instrument at a time),
+the current code is sufficient — just call `setup`/`stop` per backend.
+
+If a previous Python process died without unregistering, the next `setup()`
+will fail. Restart CFX Maestro to clear the dangling registration.
+
 ## Troubleshooting
 
 - **Python sees `HTTP Error 502: Bad Gateway`** — the WCF call threw inside the

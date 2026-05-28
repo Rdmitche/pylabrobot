@@ -55,8 +55,10 @@ def _fmt_block(b) -> str:
   return "\n".join(lines)
 
 
-async def main(sidecar_url: str, timeout: float) -> int:
-  backend = CFXMaestroBackend(sidecar_url=sidecar_url, request_timeout=timeout)
+async def main(sidecar_url: str, timeout: float, serial_number=None) -> int:
+  backend = CFXMaestroBackend(
+    sidecar_url=sidecar_url, serial_number=serial_number, request_timeout=timeout
+  )
 
   # 1. Health-check the raw transport first, so a connection problem is obvious
   #    before we involve the WCF layer.
@@ -113,5 +115,10 @@ if __name__ == "__main__":
   parser.add_argument(
     "--timeout", type=float, default=30.0, help="HTTP request timeout in seconds"
   )
+  parser.add_argument(
+    "--serial-number",
+    default=None,
+    help="Target a specific CFX serial. Default: adopt the first connected block.",
+  )
   args = parser.parse_args()
-  sys.exit(asyncio.run(main(args.sidecar_url, args.timeout)))
+  sys.exit(asyncio.run(main(args.sidecar_url, args.timeout, args.serial_number)))

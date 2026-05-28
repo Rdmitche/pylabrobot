@@ -205,6 +205,43 @@ class TestCFXMaestroBackend(unittest.IsolatedAsyncioTestCase):
     self.backend.serial_number = None
     self.assertEqual(await self.backend.get_block_current_temperature(), [60.0])
 
+  async def test_setup_warns_when_multiple_blocks_and_no_serial(self):
+    import warnings as _w
+
+    def _two_blocks(message_xml: str) -> str:
+      # Hand-built two-block response.
+      return f"""<?xml version="1.0"?>
+<Blocks xmlns="{CFX_NS}">
+  <CFXManagerVersion>3.1</CFXManagerVersion><User>t</User><RegistrationID>R</RegistrationID>
+  <BlockArray><SerialNumber>SN-A</SerialNumber><Status>Idle</Status>
+    <Step>0</Step><Steps>0</Steps><Cycle>0</Cycle><Cycles>0</Cycles>
+    <SampleVolume><Volume>0</Volume><Units>u</Units></SampleVolume>
+    <LidTemperature><Temperature>25</Temperature><Units>C</Units></LidTemperature>
+    <BlockTemperature><Temperature>25</Temperature><Units>C</Units></BlockTemperature>
+    <EstimatedRemainingRunTime>0</EstimatedRemainingRunTime><NickName/>
+  </BlockArray>
+  <BlockArray><SerialNumber>SN-B</SerialNumber><Status>Idle</Status>
+    <Step>0</Step><Steps>0</Steps><Cycle>0</Cycle><Cycles>0</Cycles>
+    <SampleVolume><Volume>0</Volume><Units>u</Units></SampleVolume>
+    <LidTemperature><Temperature>25</Temperature><Units>C</Units></LidTemperature>
+    <BlockTemperature><Temperature>25</Temperature><Units>C</Units></BlockTemperature>
+    <EstimatedRemainingRunTime>0</EstimatedRemainingRunTime><NickName/>
+  </BlockArray>
+</Blocks>"""
+
+    async def fake(msg: str) -> str:
+      return _two_blocks(msg)
+
+    b = CFXMaestroBackend(sidecar_url="http://localhost:9/x")
+    b._xml_command = fake  # type: ignore[assignment]
+
+    with _w.catch_warnings(record=True) as caught:
+      _w.simplefilter("always")
+      await b.setup()
+    msgs = [str(w.message) for w in caught]
+    self.assertTrue(any("2 connected instruments" in m for m in msgs), msgs)
+    self.assertEqual(b.serial_number, "SN-A")  # first block adopted
+
   async def test_direct_setpoints_not_supported(self):
     with self.assertRaises(NotImplementedError):
       await self.backend.set_block_temperature([60.0])

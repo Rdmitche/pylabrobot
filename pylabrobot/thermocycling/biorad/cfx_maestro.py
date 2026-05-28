@@ -38,6 +38,7 @@ takes file *paths*, not a :class:`~pylabrobot.thermocycling.standard.Protocol`.
 
 import asyncio
 import urllib.request
+import warnings
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -302,6 +303,15 @@ class CFXMaestroBackend(ThermocyclerBackend):
     self._registration_id = resp.registration_id
     if self.serial_number is None and resp.blocks:
       self.serial_number = resp.blocks[0].serial_number
+      if len(resp.blocks) > 1:
+        # Multi-instrument footgun: don't silently pick one for the user.
+        all_serials = ", ".join(b.serial_number for b in resp.blocks)
+        warnings.warn(
+          f"CFX Maestro reports {len(resp.blocks)} connected instruments "
+          f"({all_serials}); auto-adopted {self.serial_number!r}. Pass "
+          f"serial_number=... explicitly to target a specific block.",
+          stacklevel=2,
+        )
 
   async def stop(self):
     if self._registration_id:
