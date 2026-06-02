@@ -27,4 +27,5 @@ Backends
   chatterbox.ThermocyclerChatterboxBackend
   opentrons_backend.OpentronsThermocyclerBackend
   biorad.cfx_maestro.CFXMaestroBackend
+  biorad.cfx_maestro.CFXMaestroSession
   biorad.cfx.CFX384ChatterboxBackend

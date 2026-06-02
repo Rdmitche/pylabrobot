@@ -14,9 +14,12 @@ Thermocyclers are essential for temperature-controlled processes like PCR (Polym
 ## Supported Thermocyclers
 
 - Opentrons Thermocycler
+- Inheco ODTC
+- Bio-Rad CFX (CFX384, CFX96, CFX Opus) — via the CFX Maestro API
 
 ```{toctree}
 :maxdepth: 1
 
 Inheco ODTC <inheco-odtc>
+Bio-Rad CFX (CFX Maestro) <biorad-cfx>
 ```
